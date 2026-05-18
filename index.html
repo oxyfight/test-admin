@@ -88,7 +88,7 @@
                 <div class="card p-4 shadow-sm">
                     <h6 class="fw-bold text-muted mb-3">พิมพ์รหัสด้วยตัวเอง (Manual)</h6>
                     <div class="input-group">
-                        <input type="text" id="searchInput" class="form-control form-control-lg bg-light" placeholder="กรอกรหัสลงทะเบียน 6 หลัก">
+                        <input type="text" id="searchInput" class="form-control form-control-lg bg-light" placeholder="กรอกรหัสลงทะเบียน 6 หลัก หรือ เบอร์โทรศัพท์">
                         <button class="btn btn-primary px-4" id="btnManualSubmit" onclick="processManualInput()"><i class="fas fa-paper-plane"></i></button>
                     </div>
                     <div class="loader" id="searchLoader"><div class="spinner-border text-primary"></div></div>
@@ -107,9 +107,10 @@
                             <thead class="table-light">
                                 <tr>
                                     <th width="80" class="text-center">ลำดับ</th>
-                                    <th>ชื่อ-นามสกุล</th>
-                                    <th width="150" class="text-center">รหัส</th>
-                                    <th width="150" class="text-center">สถานะ</th>
+                                    <th>ชื่อ-นามสกุล (EN)</th>
+                                    <th width="120" class="text-center">รหัส</th>
+                                    <th width="150" class="text-center">สิทธิ์ภาพถ่าย (PDPA)</th>
+                                    <th width="120" class="text-center">สถานะ</th>
                                 </tr>
                             </thead>
                             <tbody id="participantList"></tbody>
@@ -248,8 +249,8 @@
         if(query) executeCheckInAction(query);
     }
 
-    // 🔄 ฟังก์ชันสำคัญ: จัดการเช็คอิน/เช็คเอาท์หน้างาน ผูกการไหลข้อมูลไปหา Supabase และแสตมป์วันที่ใน Sheets
-    async function executeCheckInAction(registrationId) {
+    // 🔄 ฟังก์ชันอัปเกรดระดับสูง: ค้นหาด้วย ID หรือ เบอร์โทรศัพท์ พร้อมแจ้งเตือนสิทธิ์ถ่ายภาพประชาสัมพันธ์หน้างาน
+    async function executeCheckInAction(searchQuery) {
         if(isProcessing) return;
         isProcessing = true; 
         showLoader('searchLoader', true);
@@ -262,9 +263,24 @@
         resultDiv.style.display = 'none';
 
         try {
-            // ดึงข้อมูลผู้เรียน พ่วงข้อมูลรหัสย่อหลักสูตร (course_key) มาด้วยพร้อมๆ กัน
-            const { data: user, error: fetchError } = await supabaseClient.from('registrations').select('*, sessions(name, date, course_key)').eq('id', registrationId).single();
-            if (fetchError || !user) throw new Error("ไม่พบข้อมูลรหัสลงทะเบียนนี้ในระบบควบคุม");
+            let queryBuilder = supabaseClient.from('registrations').select('*, sessions(name, date, course_key)');
+            
+            // ตรรกะตรวจเช็ค: หากป้อนมาเป็นตัวเลขล้วนยาว 9-10 หลัก ให้สลับไปค้นหาด้วยเบอร์โทรศัพท์
+            if (/^\d{9,10}$/.test(searchQuery)) {
+                queryBuilder = queryBuilder.eq('phone', searchQuery);
+            } else {
+                queryBuilder = queryBuilder.eq('id', searchQuery);
+            }
+
+            const { data: results, error: fetchError } = await queryBuilder;
+            if (fetchError) throw fetchError;
+            if (!results || results.length === 0) {
+                throw new Error(`ไม่พบข้อมูลผู้ลงทะเบียนจากรหัส หรือ เบอร์โทรที่พิมพ์เข้ามา: "${searchQuery}"`);
+            }
+
+            // หยิบข้อมูลทรานแซกชันตัวล่าสุดมาประมวลผลกรณีเบอร์โทรซ้ำคิว
+            const user = results[results.length - 1];
+            const registrationId = user.id;
 
             // ปรับตรรกะอัปเดตค่าฟิลด์ที่ Supabase (ตารางลูก registrations)
             let updateField = selectedMode === "IN" ? { is_checked_in: true, checked_in_at: new Date() } : { is_checked_in: false, checked_in_at: null };
@@ -284,13 +300,27 @@
                         phone: user.phone, 
                         email: user.email, 
                         sessionName: fullSessionString,
-                        courseKey: user.sessions.course_key // ส่งตัวย่อคีย์ เช่น STB, BLS, FOST เพื่อแยกสลับแท็บ
+                        courseKey: user.sessions.course_key 
                     })
                 });
             }
 
+            // ตรวจสอบหลักฐานสิทธิ์ PDPA เพื่อแจ้งเจ้าหน้าที่ควบคุมภาคสนาม
+            let pdpaBadge = '';
+            if (selectedMode === "IN") {
+                pdpaBadge = user.photo_consent 
+                    ? `<div class="mt-2 text-success fw-bold small"><i class="fas fa-camera me-1"></i> ยินยอมให้ถ่ายภาพประชาสัมพันธ์ ได้</div>` 
+                    : `<div class="mt-2 text-danger fw-bold small"><i class="fas fa-camera-slash me-1"></i> ❌ ห้ามถ่ายภาพ/วิดีโอประชาสัมพันธ์เด็ดขาด</div>`;
+            }
+
             resultDiv.style.display = 'block';
-            resultDiv.innerHTML = `<div class="alert alert-success text-center fw-bold fs-5 shadow-sm py-3 mb-0"><i class="fas fa-check-circle me-2"></i>${selectedMode === "IN" ? 'เช็คอินสแกนเข้างานสำเร็จ (บันทึกชีตแล้ว)' : 'ยกเลิกสถานะเช็คอินเรียบร้อย'}!<br>คุณ ${user.prefix}${user.full_name}</div>`;
+            resultDiv.innerHTML = `
+                <div class="alert alert-success text-center fw-bold fs-5 shadow-sm py-3 mb-0">
+                    <i class="fas fa-check-circle me-2"></i>
+                    ${selectedMode === "IN" ? 'เช็คอินสำเร็จ (บันทึกชีตแล้ว)' : 'ยกเลิกสถานะเช็คอินเรียบร้อย'}!<br>
+                    <span class="text-primary">${user.prefix} ${user.full_name}</span>
+                    ${pdpaBadge}
+                </div>`;
         } catch (e) {
             resultDiv.style.display = 'block';
             resultDiv.innerHTML = `<div class="alert alert-danger text-center fw-bold shadow-sm py-3 mb-0"><i class="fas fa-times-circle me-2"></i>${e.message}</div>`;
@@ -310,19 +340,33 @@
         sessions.forEach(s => { sel.innerHTML += `<option value="${s.id}">[${s.course_key}] ${s.name} [รอบ: ${s.date}]</option>`; });
     }
 
+    // 🔄 ฟังก์ชันตารางสรุปรายชื่อ: อัปเดตให้พ่นสิทธิ์ความยินยอมเรื่องภาพถ่ายออกมาให้สตาฟเช็คสถิติได้ด้วย
     async function loadParticipants() {
         const sessionId = document.getElementById('reportSessionSelect').value; if(!sessionId) return;
-        const tbody = document.getElementById('participantList'); tbody.innerHTML = '<tr><td colspan="4" class="text-center">กำลังโหลดข้อมูลรายชื่อ...</td></tr>';
+        const tbody = document.getElementById('participantList'); tbody.innerHTML = '<tr><td colspan="5" class="text-center">กำลังโหลดข้อมูลรายชื่อ...</td></tr>';
         
         const { data: list, error } = await supabaseClient.from('registrations').select('*').eq('session_id', sessionId).order('created_at', { ascending: true });
-        if(error) { tbody.innerHTML = '<tr><td colspan="4" class="text-center text-danger">เกิดข้อผิดพลาดภายในหมวดค้นหาข้อมูล</td></tr>'; return; }
+        if(error) { tbody.innerHTML = '<tr><td colspan="5" class="text-center text-danger">เกิดข้อผิดพลาดภายในหมวดค้นหาข้อมูล</td></tr>'; return; }
         
         tbody.innerHTML = '';
-        if(list.length === 0) { tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">รอบการอบรมนี้ยังไม่มีผู้ลงทะเบียนเข้ามาในฐานระบบ</td></tr>'; return; }
+        if(list.length === 0) { tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">รอบการอบรมนี้ยังไม่มีผู้ลงทะเบียนเข้ามาในฐานระบบ</td></tr>'; return; }
 
         list.forEach((row, index) => {
             const status = row.is_checked_in ? '<span class="badge bg-success"><i class="fas fa-check me-1"></i>รายงานตัวแล้ว</span>' : '<span class="badge bg-secondary">ยังไม่แสดงตัว</span>';
-            tbody.innerHTML += `<tr><td class="text-center fw-bold text-muted">${index + 1}</td><td><b>${row.prefix}${row.full_name}</b></td><td class="text-center"><code>${row.id}</code></td><td class="text-center">${status}</td></tr>`;
+            
+            // แสดงสถานะสิทธิ์ PDPA ภาพถ่ายด้วยตราสัญลักษณ์สีสันชัดเจน Scannable
+            const photoConsentStatus = row.photo_consent 
+                ? '<span class="badge bg-light text-success border border-success"><i class="fas fa-camera me-1"></i>ถ่ายรูปได้</span>' 
+                : '<span class="badge bg-light text-danger border border-danger"><i class="fas fa-camera-slash me-1"></i>❌ ห้ามถ่าย</span>';
+
+            tbody.innerHTML += `
+                <tr>
+                    <td class="text-center fw-bold text-muted">${index + 1}</td>
+                    <td><b>${row.prefix} ${row.full_name}</b></td>
+                    <td class="text-center"><code>${row.id}</code></td>
+                    <td class="text-center">${photoConsentStatus}</td>
+                    <td class="text-center">${status}</td>
+                </tr>`;
         });
     }
 
@@ -369,11 +413,10 @@
             
             const day = parseInt(dateParts[2]);
             const month = thaiMonths[parseInt(dateParts[1]) - 1];
-            const year = parseInt(dateParts[0]) + 543; // แปลง ค.ศ. เป็น พ.ศ. เก็บสตริงเข้าดีบี
+            const year = parseInt(dateParts[0]) + 543; 
             
             const fullDateString = `${day} ${month} ${year} ${timePart}`; 
 
-            // บันทึกคีย์ย่อและข้อมูลรอบลงตารางแม่ sessions
             const { error } = await supabaseClient.from('sessions').insert([{ course_key: courseKey, name, date: fullDateString, max_seats: parseInt(max), available_seats: parseInt(max) }]);
             if(error) throw error;
 
