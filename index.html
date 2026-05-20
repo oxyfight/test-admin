@@ -68,9 +68,9 @@
             <div class="tab-pane fade show active" id="checkinTab">
                 <div class="card p-4 bg-white shadow-sm">
                     <div class="btn-group w-100 mb-4" role="group">
-                        <input type="radio" class="btn-check" name="scanMode" id="modeIn" value="IN" checked>
+                        <input type="radio" class="btn-check" name="scanMode" id="modeIn" value="IN" checked onchange="clearResult()">
                         <label class="btn btn-outline-success py-2 fw-bold" for="modeIn">โหมดเช็คอิน</label>
-                        <input type="radio" class="btn-check" name="scanMode" id="modeOut" value="OUT">
+                        <input type="radio" class="btn-check" name="scanMode" id="modeOut" value="OUT" onchange="clearResult()">
                         <label class="btn btn-outline-warning py-2 fw-bold" for="modeOut">โหมดเช็คเอาท์ (ยกเลิก)</label>
                     </div>
                     <div class="text-center mb-3" id="cameraStartSection">
@@ -80,15 +80,16 @@
                         <button class="btn btn-danger w-100 fw-bold mb-3 shadow-sm" onclick="stopScanner()">ปิดกล้อง</button>
                         <div id="reader"></div>
                     </div>
-                    <div id="actionResult" style="display: none;"></div>
                 </div>
                 <div class="card p-4 shadow-sm">
                     <h6 class="fw-bold text-muted mb-3">พิมพ์รหัสด้วยตัวเอง (Manual)</h6>
                     <div class="input-group">
-                        <input type="text" id="searchInput" class="form-control form-control-lg bg-light" placeholder="กรอกรหัสลงทะเบียน 6 หลัก หรือ เบอร์โทรศัพท์">
-                        <button class="btn btn-primary px-4" id="btnManualSubmit" onclick="processManualInput()"><i class="fas fa-paper-plane"></i></button>
+                        <input type="text" id="searchInput" class="form-control form-control-lg bg-light" placeholder="กรอกรหัสลงทะเบียน หรือ เบอร์โทรศัพท์">
+                        <button class="btn btn-primary px-4" id="btnManualSubmit" onclick="processManualInput()"><i class="fas fa-search"></i> ค้นหา</button>
                     </div>
                     <div class="loader" id="searchLoader"><div class="spinner-border text-primary"></div></div>
+                    
+                    <div id="actionResult" style="display: none; margin-top: 15px;"></div>
                 </div>
             </div>
 
@@ -179,7 +180,9 @@
     const GOOGLE_SHEET_API = "https://script.google.com/macros/s/AKfycbxVgnUI8U6S-x9kuwer8WsNVxAblTwgJRIp1tTD7PMjEkAnNq6dOIcFKJB3PMgqUTRU/exec";
 
     const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-    let html5QrCode; let isProcessing = false;
+    let html5QrCode; 
+    let isProcessing = false;
+    let pendingUser = null; // ตัวแปรเก็บข้อมูลผู้ใช้ระหว่างรอพนักงานกดยืนยัน
 
     window.addEventListener('DOMContentLoaded', async () => {
         const { data: { session } } = await supabaseClient.auth.getSession();
@@ -216,7 +219,7 @@
     async function handleLogout() { await supabaseClient.auth.signOut(); }
 
     async function startScanner() {
-        document.getElementById('actionResult').style.display = 'none';
+        clearResult();
         if (!html5QrCode) html5QrCode = new Html5Qrcode("reader");
         document.getElementById('cameraStartSection').style.display = 'none';
         document.getElementById('scannerContainer').style.display = 'block';
@@ -233,19 +236,26 @@
         }
     }
 
+    // เมื่อสแกนคิวอาร์โค้ดสำเร็จ ให้ส่งไปค้นหาและแสดงผลเช่นเดียวกับการคีย์มือ
     onScanSuccess = (decodedText) => {
         if(isProcessing) return;
         document.getElementById('searchInput').value = decodedText;
-        stopScanner(); executeCheckInAction(decodedText);
+        stopScanner(); 
+        searchParticipant(decodedText);
     }
 
     function processManualInput() {
         const query = document.getElementById('searchInput').value.trim();
-        if(query) executeCheckInAction(query);
+        if(query) searchParticipant(query);
+    }
+    
+    function clearResult() {
+        document.getElementById('actionResult').style.display = 'none';
+        pendingUser = null;
     }
 
-    // 🔄 ฟังก์ชันอัปเกรดระดับสูง: ค้นหาด้วย ID หรือ เบอร์โทรศัพท์
-    async function executeCheckInAction(searchQuery) {
+    // 🔄 ขั้นตอนที่ 1: ค้นหาข้อมูลมา "แสดงตัวอย่าง" ก่อนกดยืนยัน
+    async function searchParticipant(searchQuery) {
         if(isProcessing) return;
         isProcessing = true; 
         showLoader('searchLoader', true);
@@ -260,7 +270,6 @@
         try {
             let queryBuilder = supabaseClient.from('registrations').select('*, sessions(name, date, course_key)');
             
-            // ตรรกะตรวจเช็ค: หากป้อนมาเป็นตัวเลขล้วนยาว 9-10 หลัก ให้สลับไปค้นหาด้วยเบอร์โทรศัพท์
             if (/^\d{9,10}$/.test(searchQuery)) {
                 queryBuilder = queryBuilder.eq('phone', searchQuery);
             } else {
@@ -270,19 +279,78 @@
             const { data: results, error: fetchError } = await queryBuilder;
             if (fetchError) throw fetchError;
             if (!results || results.length === 0) {
-                throw new Error(`ไม่พบข้อมูลผู้ลงทะเบียนจากรหัส หรือ เบอร์โทรที่พิมพ์เข้ามา: "${searchQuery}"`);
+                throw new Error(`ไม่พบข้อมูลผู้ลงทะเบียนจากรหัส หรือ เบอร์โทร: "${searchQuery}"`);
             }
 
-            // หยิบข้อมูลทรานแซกชันตัวล่าสุดมาประมวลผลกรณีเบอร์โทรซ้ำคิว
             const user = results[results.length - 1];
-            const registrationId = user.id;
+            pendingUser = user; // เก็บข้อมูลผู้ใช้ไว้ใช้ในฟังก์ชันถัดไป
 
-            // ปรับตรรกะอัปเดตค่าฟิลด์ที่ Supabase
+            // เตรียมป้ายกำกับสถานะ
+            let pdpaBadge = user.photo_consent 
+                ? `<span class="badge bg-success"><i class="fas fa-camera me-1"></i> ถ่ายภาพได้</span>` 
+                : `<span class="badge bg-danger"><i class="fas fa-camera-slash me-1"></i> ห้ามถ่ายภาพ</span>`;
+            
+            let currentStatus = user.is_checked_in 
+                ? `<span class="text-success fw-bold"><i class="fas fa-check-circle"></i> เช็คอินแล้ว</span>`
+                : `<span class="text-secondary fw-bold"><i class="fas fa-clock"></i> ยังไม่เช็คอิน</span>`;
+
+            let prefixStr = user.prefix ? user.prefix + " " : "";
+
+            // ปุ่มกดที่เปลี่ยนไปตามโหมดเช็คอิน/เช็คเอาท์
+            let actionButton = '';
+            if (selectedMode === 'IN') {
+                actionButton = `<button class="btn btn-success btn-lg w-100 fw-bold mt-3 shadow-sm" onclick="commitCheckIn('IN')"><i class="fas fa-sign-in-alt me-2"></i> ยืนยันเช็คอินเข้างาน</button>`;
+            } else {
+                actionButton = `<button class="btn btn-warning btn-lg w-100 fw-bold mt-3 shadow-sm" onclick="commitCheckIn('OUT')"><i class="fas fa-sign-out-alt me-2"></i> ยืนยันยกเลิกการเช็คอิน</button>`;
+            }
+
+            resultDiv.style.display = 'block';
+            resultDiv.innerHTML = `
+                <div class="card border-primary shadow-sm mb-0">
+                    <div class="card-header bg-primary text-white fw-bold">
+                        <i class="fas fa-user-check me-1"></i> ตรวจสอบข้อมูลก่อนยืนยัน
+                    </div>
+                    <div class="card-body text-start">
+                        <p class="mb-1"><small class="text-muted">ชื่อ-สกุล (ไทย):</small><br><b class="fs-5">${user.full_name_th}</b></p>
+                        <p class="mb-1"><small class="text-muted">ชื่อ-สกุล (ENG):</small><br><b class="fs-6 text-primary">${prefixStr}${user.full_name_en}</b></p>
+                        <p class="mb-1"><small class="text-muted">หลักสูตร:</small><br><b>${user.sessions.name}</b></p>
+                        
+                        <div class="d-flex justify-content-between mt-3 pb-2 border-bottom">
+                            <div><small class="text-muted d-block">PDPA</small>${pdpaBadge}</div>
+                            <div class="text-end"><small class="text-muted d-block">สถานะปัจจุบัน</small>${currentStatus}</div>
+                        </div>
+                        
+                        ${actionButton}
+                    </div>
+                </div>`;
+        } catch (e) {
+            resultDiv.style.display = 'block';
+            resultDiv.innerHTML = `<div class="alert alert-danger text-center fw-bold shadow-sm py-3 mb-0"><i class="fas fa-times-circle me-2"></i>${e.message}</div>`;
+        } finally { 
+            showLoader('searchLoader', false); 
+            if(btnManual) btnManual.disabled = false;
+            isProcessing = false; 
+        }
+    }
+
+    // 🔄 ขั้นตอนที่ 2: ดำเนินการอัปเดตข้อมูลลงฐานข้อมูลและ Google Sheet (หลังจากสตาฟกดยืนยัน)
+    async function commitCheckIn(selectedMode) {
+        if(isProcessing || !pendingUser) return;
+        isProcessing = true;
+        
+        const resultDiv = document.getElementById('actionResult'); 
+        const user = pendingUser;
+        const registrationId = user.id;
+        let prefixStr = user.prefix ? user.prefix + " " : "";
+        
+        // ปิดปุ่มและแสดงสถานะโหลด
+        resultDiv.innerHTML = `<div class="text-center py-4"><div class="spinner-border text-primary mb-2"></div><br>กำลังบันทึกข้อมูลและสร้างใบประกาศ...</div>`;
+
+        try {
             let updateField = selectedMode === "IN" ? { is_checked_in: true, checked_in_at: new Date() } : { is_checked_in: false, checked_in_at: null };
             const { error: updateError } = await supabaseClient.from('registrations').update(updateField).eq('id', registrationId);
             if (updateError) throw updateError;
 
-            // หากเป็นโหมดสแกนเข้า (IN) ให้ยิงสัญญาณต่อข้ามแพลตฟอร์มไปให้ GAS
             if(selectedMode === "IN") {
                 const fullSessionString = `${user.sessions.name} (${user.sessions.date})`;
                 await fetch(GOOGLE_SHEET_API, {
@@ -291,7 +359,7 @@
                         action: "checkInSuccess", 
                         id: user.id, 
                         prefix: user.prefix, 
-                        fullName: user.full_name_en, // ⚠️ ส่งชื่อภาษาอังกฤษไปออกใบประกาศ
+                        fullName: user.full_name_en, // ส่งไปสร้าง PDF
                         phone: user.phone, 
                         email: user.email, 
                         sessionName: fullSessionString,
@@ -300,31 +368,26 @@
                 });
             }
 
-            // ตรวจสอบหลักฐานสิทธิ์ PDPA เพื่อแจ้งเจ้าหน้าที่ควบคุมภาคสนาม
-            let pdpaBadge = '';
-            if (selectedMode === "IN") {
-                pdpaBadge = user.photo_consent 
-                    ? `<div class="mt-2 text-success fw-bold small"><i class="fas fa-camera me-1"></i> ยินยอมให้ถ่ายภาพประชาสัมพันธ์ ได้</div>` 
-                    : `<div class="mt-2 text-danger fw-bold small"><i class="fas fa-camera-slash me-1"></i> ❌ ห้ามถ่ายภาพ/วิดีโอประชาสัมพันธ์เด็ดขาด</div>`;
-            }
+            let pdpaBadge = user.photo_consent 
+                ? `<div class="mt-2 text-success fw-bold small"><i class="fas fa-camera me-1"></i> ยินยอมให้ถ่ายภาพประชาสัมพันธ์ ได้</div>` 
+                : `<div class="mt-2 text-danger fw-bold small"><i class="fas fa-camera-slash me-1"></i> ❌ ห้ามถ่ายภาพ/วิดีโอประชาสัมพันธ์เด็ดขาด</div>`;
 
-            resultDiv.style.display = 'block';
             resultDiv.innerHTML = `
                 <div class="alert alert-success text-center fw-bold fs-5 shadow-sm py-3 mb-0">
                     <i class="fas fa-check-circle me-2"></i>
-                    ${selectedMode === "IN" ? 'เช็คอินสำเร็จ (บันทึกชีตแล้ว)' : 'ยกเลิกสถานะเช็คอินเรียบร้อย'}!<br>
-                    <span class="text-primary">${user.prefix} ${user.full_name_th}</span><br>
-                    <span class="text-muted small fw-normal">(${user.full_name_en})</span>
+                    ${selectedMode === "IN" ? 'เช็คอินและบันทึกข้อมูลเรียบร้อย!' : 'ยกเลิกสถานะเช็คอินเรียบร้อย!'}<br>
+                    <span class="text-primary">${user.full_name_th}</span><br>
+                    <span class="text-muted small fw-normal">(${prefixStr}${user.full_name_en})</span>
                     ${pdpaBadge}
                 </div>`;
-        } catch (e) {
-            resultDiv.style.display = 'block';
-            resultDiv.innerHTML = `<div class="alert alert-danger text-center fw-bold shadow-sm py-3 mb-0"><i class="fas fa-times-circle me-2"></i>${e.message}</div>`;
-        } finally { 
-            showLoader('searchLoader', false); 
+            
+            pendingUser = null; 
             document.getElementById('searchInput').value = ''; 
-            if(btnManual) btnManual.disabled = false;
-            isProcessing = false; 
+            
+        } catch (e) {
+            resultDiv.innerHTML = `<div class="alert alert-danger text-center fw-bold shadow-sm py-3 mb-0"><i class="fas fa-times-circle me-2"></i>${e.message}</div>`;
+        } finally {
+            isProcessing = false;
         }
     }
 
@@ -336,7 +399,7 @@
         sessions.forEach(s => { sel.innerHTML += `<option value="${s.id}">[${s.course_key}] ${s.name} [รอบ: ${s.date}]</option>`; });
     }
 
-    // 🔄 ฟังก์ชันตารางสรุปรายชื่อ: แสดงทั้งชื่อไทยและอังกฤษ
+    // 🔄 ฟังก์ชันตารางรายชื่อ: ย้ายคำนำหน้าลงไปรวมกับชื่อภาษาอังกฤษ
     async function loadParticipants() {
         const sessionId = document.getElementById('reportSessionSelect').value; if(!sessionId) return;
         const tbody = document.getElementById('participantList'); tbody.innerHTML = '<tr><td colspan="5" class="text-center">กำลังโหลดข้อมูลรายชื่อ...</td></tr>';
@@ -349,15 +412,17 @@
 
         list.forEach((row, index) => {
             const status = row.is_checked_in ? '<span class="badge bg-success"><i class="fas fa-check me-1"></i>รายงานตัวแล้ว</span>' : '<span class="badge bg-secondary">ยังไม่แสดงตัว</span>';
-            
             const photoConsentStatus = row.photo_consent 
                 ? '<span class="badge bg-light text-success border border-success"><i class="fas fa-camera me-1"></i>ถ่ายรูปได้</span>' 
                 : '<span class="badge bg-light text-danger border border-danger"><i class="fas fa-camera-slash me-1"></i>❌ ห้ามถ่าย</span>';
+            
+            // นำ Prefix ไปต่อหน้าชื่อ ENG (ถ้ามี)
+            let prefixStr = row.prefix ? row.prefix + " " : "";
 
             tbody.innerHTML += `
                 <tr>
                     <td class="text-center fw-bold text-muted">${index + 1}</td>
-                    <td><b>${row.prefix} ${row.full_name_th}</b><br><small class="text-muted">${row.full_name_en}</small></td>
+                    <td><b>${row.full_name_th}</b><br><small class="text-muted">${prefixStr}${row.full_name_en}</small></td>
                     <td class="text-center"><code>${row.id}</code></td>
                     <td class="text-center">${photoConsentStatus}</td>
                     <td class="text-center">${status}</td>
