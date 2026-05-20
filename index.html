@@ -25,7 +25,6 @@
 </head>
 <body>
 
-<!-- ส่วนของหน้าต่างเข้าสู่ระบบ (Authentication) -->
 <div id="authContainer">
     <div class="login-card">
         <div class="text-center mb-4">
@@ -47,7 +46,6 @@
     </div>
 </div>
 
-<!-- ส่วนของหน้าต่างแดชบอร์ดควบคุมหลัก (Dashboard) -->
 <div id="dashboardContainer" style="display: none;">
     <nav class="navbar navbar-dark shadow-sm">
         <div class="container d-flex justify-content-between align-items-center">
@@ -67,7 +65,6 @@
         </ul>
 
         <div class="tab-content">
-            <!-- TAB 1: ระบบสแกนคิวอาร์โค้ด / คีย์รายงานตัวหน้างาน -->
             <div class="tab-pane fade show active" id="checkinTab">
                 <div class="card p-4 bg-white shadow-sm">
                     <div class="btn-group w-100 mb-4" role="group">
@@ -95,7 +92,6 @@
                 </div>
             </div>
 
-            <!-- TAB 2: รายชื่อผู้เรียนแยกตามรอบวิชา -->
             <div class="tab-pane fade" id="reportTab">
                 <div class="card p-3 shadow-sm border-0">
                     <div class="mb-3">
@@ -107,7 +103,7 @@
                             <thead class="table-light">
                                 <tr>
                                     <th width="80" class="text-center">ลำดับ</th>
-                                    <th>ชื่อ-นามสกุล (EN)</th>
+                                    <th>ชื่อ-นามสกุล (TH / EN)</th>
                                     <th width="120" class="text-center">รหัส</th>
                                     <th width="150" class="text-center">สิทธิ์ภาพถ่าย (PDPA)</th>
                                     <th width="120" class="text-center">สถานะ</th>
@@ -119,7 +115,6 @@
                 </div>
             </div>
 
-            <!-- TAB 3: ระบบจัดการและสร้างรอบเรียน (คีย์ย่อ STB, BLS, FOST) -->
             <div class="tab-pane fade" id="configTab">
                 <div class="card p-3 bg-light mb-4 shadow-sm">
                     <h6 class="fw-bold text-primary mb-3"><i class="fas fa-plus-circle me-2"></i>เปิดหลักสูตร / รอบการอบรมใหม่</h6>
@@ -249,7 +244,7 @@
         if(query) executeCheckInAction(query);
     }
 
-    // 🔄 ฟังก์ชันอัปเกรดระดับสูง: ค้นหาด้วย ID หรือ เบอร์โทรศัพท์ พร้อมแจ้งเตือนสิทธิ์ถ่ายภาพประชาสัมพันธ์หน้างาน
+    // 🔄 ฟังก์ชันอัปเกรดระดับสูง: ค้นหาด้วย ID หรือ เบอร์โทรศัพท์
     async function executeCheckInAction(searchQuery) {
         if(isProcessing) return;
         isProcessing = true; 
@@ -282,12 +277,12 @@
             const user = results[results.length - 1];
             const registrationId = user.id;
 
-            // ปรับตรรกะอัปเดตค่าฟิลด์ที่ Supabase (ตารางลูก registrations)
+            // ปรับตรรกะอัปเดตค่าฟิลด์ที่ Supabase
             let updateField = selectedMode === "IN" ? { is_checked_in: true, checked_in_at: new Date() } : { is_checked_in: false, checked_in_at: null };
             const { error: updateError } = await supabaseClient.from('registrations').update(updateField).eq('id', registrationId);
             if (updateError) throw updateError;
 
-            // หากเป็นโหมดสแกนเข้า (IN) ให้ยิงสัญญาณต่อข้ามแพลตฟอร์มไปให้ GAS แสตมป์ ค.ศ. ลงชีต Col H
+            // หากเป็นโหมดสแกนเข้า (IN) ให้ยิงสัญญาณต่อข้ามแพลตฟอร์มไปให้ GAS
             if(selectedMode === "IN") {
                 const fullSessionString = `${user.sessions.name} (${user.sessions.date})`;
                 await fetch(GOOGLE_SHEET_API, {
@@ -296,7 +291,7 @@
                         action: "checkInSuccess", 
                         id: user.id, 
                         prefix: user.prefix, 
-                        fullName: user.full_name, 
+                        fullName: user.full_name_en, // ⚠️ ส่งชื่อภาษาอังกฤษไปออกใบประกาศ
                         phone: user.phone, 
                         email: user.email, 
                         sessionName: fullSessionString,
@@ -318,7 +313,8 @@
                 <div class="alert alert-success text-center fw-bold fs-5 shadow-sm py-3 mb-0">
                     <i class="fas fa-check-circle me-2"></i>
                     ${selectedMode === "IN" ? 'เช็คอินสำเร็จ (บันทึกชีตแล้ว)' : 'ยกเลิกสถานะเช็คอินเรียบร้อย'}!<br>
-                    <span class="text-primary">${user.prefix} ${user.full_name}</span>
+                    <span class="text-primary">${user.prefix} ${user.full_name_th}</span><br>
+                    <span class="text-muted small fw-normal">(${user.full_name_en})</span>
                     ${pdpaBadge}
                 </div>`;
         } catch (e) {
@@ -340,7 +336,7 @@
         sessions.forEach(s => { sel.innerHTML += `<option value="${s.id}">[${s.course_key}] ${s.name} [รอบ: ${s.date}]</option>`; });
     }
 
-    // 🔄 ฟังก์ชันตารางสรุปรายชื่อ: อัปเดตให้พ่นสิทธิ์ความยินยอมเรื่องภาพถ่ายออกมาให้สตาฟเช็คสถิติได้ด้วย
+    // 🔄 ฟังก์ชันตารางสรุปรายชื่อ: แสดงทั้งชื่อไทยและอังกฤษ
     async function loadParticipants() {
         const sessionId = document.getElementById('reportSessionSelect').value; if(!sessionId) return;
         const tbody = document.getElementById('participantList'); tbody.innerHTML = '<tr><td colspan="5" class="text-center">กำลังโหลดข้อมูลรายชื่อ...</td></tr>';
@@ -354,7 +350,6 @@
         list.forEach((row, index) => {
             const status = row.is_checked_in ? '<span class="badge bg-success"><i class="fas fa-check me-1"></i>รายงานตัวแล้ว</span>' : '<span class="badge bg-secondary">ยังไม่แสดงตัว</span>';
             
-            // แสดงสถานะสิทธิ์ PDPA ภาพถ่ายด้วยตราสัญลักษณ์สีสันชัดเจน Scannable
             const photoConsentStatus = row.photo_consent 
                 ? '<span class="badge bg-light text-success border border-success"><i class="fas fa-camera me-1"></i>ถ่ายรูปได้</span>' 
                 : '<span class="badge bg-light text-danger border border-danger"><i class="fas fa-camera-slash me-1"></i>❌ ห้ามถ่าย</span>';
@@ -362,7 +357,7 @@
             tbody.innerHTML += `
                 <tr>
                     <td class="text-center fw-bold text-muted">${index + 1}</td>
-                    <td><b>${row.prefix} ${row.full_name}</b></td>
+                    <td><b>${row.prefix} ${row.full_name_th}</b><br><small class="text-muted">${row.full_name_en}</small></td>
                     <td class="text-center"><code>${row.id}</code></td>
                     <td class="text-center">${photoConsentStatus}</td>
                     <td class="text-center">${status}</td>
